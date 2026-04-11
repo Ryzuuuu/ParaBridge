@@ -98,15 +98,31 @@ def create_circular_pier(diameter, height):
     return BRepPrimAPI_MakeCylinder(axis, diameter / 2.0, height).Shape()
 
 def create_trapezoidal_pier_cap(length, width_top, width_bottom, depth):
-    # extrusion of trapezoid polygon
+    # extrusion of a 6-point hammerhead polygon (has vertical side shoulders)
     w_top_half = width_top / 2.0
     w_bot_half = width_bottom / 2.0
+    
+    # 50% of the depth is the tapered bottom, 50% is the straight vertical shoulder
+    taper_height = depth * 0.5
 
     poly = BRepBuilderAPI_MakePolygon()
+    
+    # Start at bottom left, go counter-clockwise
     poly.Add(gp_Pnt(0, -w_bot_half, 0))
     poly.Add(gp_Pnt(0, w_bot_half, 0))
+    
+    # Taper up to the shoulder line
+    poly.Add(gp_Pnt(0, w_top_half, taper_height))
+    
+    # Go straight up the vertical shoulder to the top
     poly.Add(gp_Pnt(0, w_top_half, depth))
+    
+    # Across the top face
     poly.Add(gp_Pnt(0, -w_top_half, depth))
+    
+    # Down the other vertical shoulder
+    poly.Add(gp_Pnt(0, -w_top_half, taper_height))
+    
     poly.Close()
 
     face = BRepBuilderAPI_MakeFace(poly.Wire()).Face()
