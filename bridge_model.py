@@ -56,6 +56,11 @@ rebar_cover = 40.0
 rebar_visible = True
 concrete_opacity = 0.35
 
+# Pile reinforcement (stirrups) - isolated config
+pile_rebar_diameter = 5.0
+pile_rebar_spacing = 500.0
+pile_lod_enabled = False  # Toggle for Level-of-Detail: False=cylinders, True=lines (faster export)
+
 # Visualization & export
 show_axes = False
 background_color = "grey"
@@ -229,6 +234,44 @@ def build_deck():
     deck = move_shape(deck, dx=-span_length_L / 2.0, dy=-deck_width / 2.0, dz=-deck_thickness)
     return deck
 
+def create_pile_stirrups(pile_x, pile_y, pile_z_bottom, pile_len, pile_diam, stirrup_diam, stirrup_spacing, use_proxy=False):
+    """Create stirrups (reinforcement rings) for a single pile.
+    
+    Args:
+        pile_x, pile_y: pile center coordinates
+        pile_z_bottom: bottom elevation of pile
+        pile_len: length of pile
+        pile_diam: diameter of pile
+        stirrup_diam: diameter of stirrup rebar
+        stirrup_spacing: vertical spacing between stirrups
+        use_proxy: if True, use lines instead of torus (for LOD/fast export)
+    
+    Returns: list of stirrup shapes
+    """
+    stirrups = []
+    z_ring = stirrup_spacing / 2.0  # Start at half-spacing from bottom
+    major_r = (pile_diam / 2.0) + (stirrup_diam / 2.0)
+    minor_r = stirrup_diam / 2.0
+    
+    while z_ring < pile_len - (stirrup_spacing / 2.0):
+        if use_proxy:
+            # Proxy geometry: use a circle line instead of torus for speed
+            from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+            from OCC.Core.Geom import Geom_Circle
+            circle = Geom_Circle(gp_Ax2(gp_Pnt(pile_x, pile_y, pile_z_bottom + z_ring), gp_Dir(0, 0, 1)), major_r)
+            edge = BRepBuilderAPI_MakeEdge(circle).Edge()
+            stirrups.append(edge)
+        else:
+            # Full geometry: torus shape
+            ax = gp_Ax2(gp_Pnt(0, 0, z_ring), gp_Dir(0, 0, 1))
+            ring = BRepPrimAPI_MakeTorus(ax, major_r, minor_r).Shape()
+            ring = move_shape(ring, dx=pile_x, dy=pile_y, dz=pile_z_bottom)
+            stirrups.append(ring)
+        
+        z_ring += stirrup_spacing
+    
+    return stirrups
+
 def build_piers_and_pilecaps():
     print("Building substructure and foundations...")
     z_deck = -(deck_thickness + girder_section_d)
@@ -263,15 +306,18 @@ def build_piers_and_pilecaps():
             pile = move_shape(pile, dx=px + ox, dy=oy, dz=z_pile_bot)
             piles.append(pile)
 
-            z_ring = 500.0
-            major_r = (pile_diameter / 2.0) + 5.0
-            minor_r = 5.0
-            while z_ring < pile_length - 250:
-                ax = gp_Ax2(gp_Pnt(0, 0, z_ring), gp_Dir(0, 0, 1))
-                ring = BRepPrimAPI_MakeTorus(ax, major_r, minor_r).Shape()
-                ring = move_shape(ring, dx=px + ox, dy=oy, dz=z_pile_bot)
-                stirrups.append(ring)
-                z_ring += 500.0
+            # Create stirrups using isolated, configurable function
+            pile_stirrups = create_pile_stirrups(
+                pile_x=px + ox,
+                pile_y=oy,
+                pile_z_bottom=z_pile_bot,
+                pile_len=pile_length,
+                pile_diam=pile_diameter,
+                stirrup_diam=pile_rebar_diameter,
+                stirrup_spacing=pile_rebar_spacing,
+                use_proxy=pile_lod_enabled
+            )
+            stirrups.extend(pile_stirrups)
 
     return {
         "pier_caps": pier_caps,
