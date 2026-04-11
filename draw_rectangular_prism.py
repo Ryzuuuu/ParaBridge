@@ -1,7 +1,5 @@
-import sys
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 from OCC.Display.SimpleGui import init_display
-from OCC.Core.gp import gp_Pnt
 
 
 def create_rectangular_prism(length, breadth, height):

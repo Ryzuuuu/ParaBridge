@@ -1,13 +1,15 @@
 from OCC.Core.gp import gp_Vec, gp_Trsf
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
-from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Fuse
+
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
+from OCC.Core.TopoDS import TopoDS_Compound
+from OCC.Core.BRep import BRep_Builder
 from OCC.Display.SimpleGui import init_display
 
 
 def create_i_section(length, top_width, bot_width, depth, top_flange_thickness, bot_flange_thickness, web_thickness):
     """
-    Create an asymmetric I-section CAD model (per IS 2062) with distinct top and bottom flanges.
+    Create an asymmetric I-section CAD model (per IS 800) with distinct top and bottom flanges.
 
     Parameters:
     - length: Length of the I-section (along extrusion axis)
@@ -45,11 +47,17 @@ def create_i_section(length, top_width, bot_width, depth, top_flange_thickness, 
     trsf_web.SetTranslation(gp_Vec(0, -web_thickness / 2.0, bot_flange_thickness))
     web = BRepBuilderAPI_Transform(web, trsf_web, True).Shape()
 
-    # Combine the flanges and web to form the I-section
-    i_section_solid = BRepAlgoAPI_Fuse(bottom_flange, top_flange).Shape()
-    i_section_solid = BRepAlgoAPI_Fuse(i_section_solid, web).Shape()
+    # Combine the flanges and web using a Compound for O(1) assembly
+    
+    builder = BRep_Builder()
+    i_section_compound = TopoDS_Compound()
+    builder.MakeCompound(i_section_compound)
+    
+    builder.Add(i_section_compound, bottom_flange)
+    builder.Add(i_section_compound, top_flange)
+    builder.Add(i_section_compound, web)
 
-    return i_section_solid
+    return i_section_compound
 
 
 if __name__ == "__main__":
