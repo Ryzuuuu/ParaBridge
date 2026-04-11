@@ -838,12 +838,8 @@ def launch_viewer(config: BridgeConfig, parts: dict):
 
     # Custom camera preset: 3/4 front-below view that reveals both pier groups
     # and the full substructure without the deck obscuring the far pier.
-    try:
-        view = display.View
-        view.SetProj(1.2, -2.5, 0.8)   # eye direction vector (X, Y, Z)
-        view.SetUp(0, 0, 1)             # Z-up
-    except Exception:
-        display.View_Iso()              # fall back to standard iso if API differs
+    
+    display.View_Iso()              # fall back to standard iso if API differs
 
     display.FitAll()
     start()
@@ -936,8 +932,29 @@ def main():
         if val is not None:
             kwargs[field] = val
 
+    # All dimensional CLI args need pre-scaling to mm
+    unit_scale = 1000.0 if args.units == "m" else 1.0
+
+    # Dimensional fields passed via simple_fields also need scaling
+    dimensional_simple = [
+        "girder_centroid_spacing", "deck_thickness", "girder_offset_from_edge",
+        "girder_section_d", "girder_section_bf_bot", "girder_section_tf_bot",
+        "girder_section_tw", "rebar_spacing_longitudinal",
+    ]
+    for f in dimensional_simple:
+        if f in kwargs:
+            kwargs[f] = kwargs[f] * unit_scale
+
     if args.span:
-        kwargs["span_length_L"] = args.span
+        kwargs["span_length_L"] = args.span * unit_scale
+    if args.pier_height:
+        kwargs["pier_height"] = args.pier_height * unit_scale
+    if args.pile_length:
+        kwargs["pile_length"] = args.pile_length * unit_scale
+    if args.pile_diameter:
+        kwargs["pile_diameter"] = args.pile_diameter * unit_scale
+    if args.pier_diameter:
+        kwargs["pier_diameter"] = args.pier_diameter * unit_scale
     if args.no_rebar:
         kwargs["rebar_visible"] = False
     if args.no_step:

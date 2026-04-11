@@ -53,10 +53,10 @@ class TestBridgeConfig:
         assert config.unit_scale == 1.0
 
     def test_unit_scale_m(self):
-        cfg = bm.BridgeConfig(units="m", span_length_L=12.0)
+        cfg = bm.BridgeConfig(units="m")
         assert cfg.unit_scale == 0.001
-        # After scaling, span should be in mm internally
-        assert abs(cfg.span_length_L - 12.0) < 1e-6   # already scaled by post_init
+        # Default 12000.0 mm scaled by 0.001 should be 12.0 m
+        assert abs(cfg.span_length_L - 12.0) < 1e-6
 
     def test_custom_span(self):
         cfg = bm.BridgeConfig(span_length_L=15000.0)
