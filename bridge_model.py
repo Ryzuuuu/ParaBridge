@@ -353,9 +353,14 @@ def main():
     args = parser.parse_args()
 
     # CLI override
-    global span_length_L
+    global span_length_L, girder_length, deck_width, pier_cap_top_width
     if args.span:
         span_length_L = args.span
+        
+    # Recalculate all derived geometry based on any overrides
+    girder_length = span_length_L
+    deck_width = (n_girders - 1) * girder_centroid_spacing + 2 * deck_overhang
+    pier_cap_top_width = deck_width
 
     comp, parts = assemble_bridge()
 
