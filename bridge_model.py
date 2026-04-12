@@ -107,28 +107,6 @@ class BridgeConfig:
     girder_length: float = field(init=False)
 
     def __post_init__(self):
-        self.unit_scale = 0.001 if str(self.units).strip().lower() == "m" else 1.0
-
-        # All dimensional fields that must be scaled to internal mm units
-        _dim_fields = [
-            'span_length_L', 'girder_centroid_spacing', 'girder_offset_from_edge',
-            'pier_location_x', 'lane_width',
-            'girder_section_d', 'girder_section_bf_bot', 'girder_section_bf_top',
-            'girder_section_tf_bot', 'girder_section_tf_top', 'girder_section_tw',
-            'deck_thickness', 'deck_slab_segment_length', 'deck_cover',
-            'pier_diameter', 'pier_height',
-            'pier_cap_length', 'pier_cap_top_width', 'pier_cap_bottom_width', 'pier_cap_depth',
-            'pier_cap_elevation',
-            'pile_diameter', 'pile_length', 'pile_spacing',
-            'pile_cap_length', 'pile_cap_width', 'pile_cap_depth', 'pile_cap_elevation',
-            'rebar_main_diameter', 'rebar_transverse_diameter',
-            'rebar_spacing_longitudinal', 'rebar_spacing_transverse',
-            'rebar_cover', 'pile_rebar_diameter', 'pile_rebar_spacing',
-            'crossframe_radius',
-        ]
-        for fname in _dim_fields:
-            setattr(self, fname, float(getattr(self, fname)) * self.unit_scale)
-
         # Integer coercions
         self.n_girders         = int(self.n_girders)
         self.n_piles_per_cap   = int(self.n_piles_per_cap)
