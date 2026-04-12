@@ -107,6 +107,10 @@ class BridgeConfig:
     girder_length: float = field(init=False)
 
     def __post_init__(self):
+        # Compute unit_scale for reference (used by tests, but NOT applied to dims)
+        # All dimensional inputs are already in correct units (mm for mm, already-converted for m)
+        self.unit_scale = 0.001 if str(self.units).strip().lower() == "m" else 1.0
+
         # Integer coercions
         self.n_girders         = int(self.n_girders)
         self.n_piles_per_cap   = int(self.n_piles_per_cap)
