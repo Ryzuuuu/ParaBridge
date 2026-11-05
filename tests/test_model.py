@@ -55,13 +55,36 @@ class TestBridgeConfig:
     def test_unit_scale_m(self):
         cfg = bm.BridgeConfig(units="m")
         assert cfg.unit_scale == 0.001
-        # Default 12000.0 is always in mm.  Unit conversion happens in main() for CLI inputs,
-        # not in __post_init__, to avoid double-scaling.
+        # Default 12000.0 is always in mm.  Unit conversion happens in build_config() for CLI
+        # inputs, not in __post_init__, to avoid double-scaling.
         assert abs(cfg.span_length_L - 12000.0) < 1e-6
 
     def test_custom_span(self):
         cfg = bm.BridgeConfig(span_length_L=15000.0)
         assert abs(cfg.span_length_L - 15000.0) < 1e-6
+
+    def test_pier_location_derived_from_span(self):
+        assert bm.BridgeConfig().pier_location_x == pytest.approx(5500.0)
+        cfg = bm.BridgeConfig(span_length_L=15000.0, longitudinal_overhang=750.0)
+        assert cfg.pier_location_x == pytest.approx(6750.0)
+
+    def test_derived_values_follow_parameter_changes(self, config):
+        config.girder_centroid_spacing = 4000.0
+        config.span_length_L = 20000.0
+        assert config.deck_width == pytest.approx(2 * 4000.0 + 2 * config.girder_offset_from_edge)
+        assert config.girder_length == pytest.approx(20000.0)
+
+    def test_pier_cap_widths_default_to_auto(self, config):
+        outer_span = (config.n_girders - 1) * config.girder_centroid_spacing
+        assert config.pier_cap_top_width == pytest.approx(outer_span + 2 * config.pier_diameter)
+        assert config.pier_cap_bottom_width == pytest.approx(config.pier_diameter + 400.0)
+
+    def test_pier_cap_widths_can_be_overridden(self):
+        cfg = bm.BridgeConfig(pier_cap_top_width_override=9000.0, pier_cap_bottom_width_override=1500.0)
+        assert cfg.pier_cap_top_width == pytest.approx(9000.0)
+        assert cfg.pier_cap_bottom_width == pytest.approx(1500.0)
+        cfg.pier_cap_top_width = 7000.0
+        assert cfg.pier_cap_top_width == pytest.approx(7000.0)
 
     def test_all_required_params_present(self, config):
         required = [
@@ -225,6 +248,21 @@ class TestAssembly:
         # 4 piles per pier group, 2 pier groups → 8 piles total
         assert len(parts["piles"]) == 4 * 2
 
+    @pytest.mark.parametrize("n_piles", [1, 2, 3, 4, 6])
+    def test_pile_count_follows_config(self, n_piles):
+        cfg = bm.BridgeConfig(n_piles_per_cap=n_piles, rebar_visible=False, pile_lod_enabled=True)
+        _, parts = bm.assemble_bridge(cfg)
+        assert len(parts["piles"]) == 2 * n_piles
+
+    def test_default_pile_layout_is_two_by_two(self, config):
+        dx = config.pile_cap_length / 4.0
+        dy = config.pile_spacing / 2.0
+        assert bm._pile_offsets(config) == [(-dx, -dy), (-dx, dy), (dx, -dy), (dx, dy)]
+
+    def test_zero_piles_rejected(self):
+        with pytest.raises(ValueError):
+            bm.BridgeConfig(n_piles_per_cap=0)
+
     def test_crossframe_count(self, slim_config):
         _, parts = bm.assemble_bridge(slim_config)
         # 2 diagonals × (n_girders-1) bays × n_crossframes planes
@@ -250,3 +288,66 @@ class TestAssembly:
         cfg = bm.BridgeConfig(span_length_L=15000.0)
         _, parts = bm.assemble_bridge(cfg)
         assert len(parts["girders"]) == cfg.n_girders
+
+
+# ---------------------------------------------------------------------------
+# Export tests
+# ---------------------------------------------------------------------------
+
+class TestExport:
+    def test_step_export_writes_file(self, slim_config, tmp_path):
+        compound, _ = bm.assemble_bridge(slim_config)
+        target = tmp_path / "nested" / "bridge.step"
+        bm.export_step(compound, str(target))
+        assert target.is_file()
+        assert "ISO-10303-21" in target.read_text(errors="ignore")[:200]
+
+    def test_brep_export_writes_file(self, slim_config, tmp_path):
+        compound, _ = bm.assemble_bridge(slim_config)
+        target = tmp_path / "bridge.brep"
+        bm.export_brep(compound, str(target))
+        assert target.is_file() and target.stat().st_size > 0
+
+
+# ---------------------------------------------------------------------------
+# Command-line handling tests
+# ---------------------------------------------------------------------------
+
+class TestCli:
+    def test_defaults_leave_config_untouched(self):
+        cfg = bm.build_config(bm._parse_args([]))
+        default = bm.BridgeConfig()
+        assert cfg.span_length_L == default.span_length_L
+        assert cfg.n_girders == default.n_girders
+        assert cfg.rebar_visible and cfg.save_step
+
+    def test_millimetre_values_pass_through(self):
+        cfg = bm.build_config(bm._parse_args(["--span", "18000", "--n-girders", "4"]))
+        assert cfg.span_length_L == pytest.approx(18000.0)
+        assert cfg.n_girders == 4
+
+    def test_metre_values_are_converted_to_mm(self):
+        cfg = bm.build_config(bm._parse_args([
+            "--units", "m", "--span", "18", "--girder-spacing", "3.5",
+            "--girder-bf", "0.35", "--girder-tf", "0.02", "--pier-height", "4",
+        ]))
+        assert cfg.span_length_L == pytest.approx(18000.0)
+        assert cfg.girder_centroid_spacing == pytest.approx(3500.0)
+        assert cfg.pier_height == pytest.approx(4000.0)
+        # A single flange value applies to both flanges, converted consistently.
+        assert cfg.girder_section_bf_bot == pytest.approx(350.0)
+        assert cfg.girder_section_bf_top == pytest.approx(350.0)
+        assert cfg.girder_section_tf_bot == pytest.approx(20.0)
+        assert cfg.girder_section_tf_top == pytest.approx(20.0)
+
+    def test_switches(self):
+        cfg = bm.build_config(bm._parse_args(["--no-rebar", "--no-step", "--save-brep", "--lod", "--show-axes"]))
+        assert cfg.rebar_visible is False
+        assert cfg.save_step is False
+        assert cfg.save_brep is True
+        assert cfg.pile_lod_enabled is True
+        assert cfg.show_axes is True
+
+    def test_invalid_units_rejected(self):
+        with pytest.raises(SystemExit):
+            bm._parse_args(["--units", "ft"])

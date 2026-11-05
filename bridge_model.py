@@ -11,7 +11,8 @@ Coordinate system
   Z-axis → Vertical    (upward positive)
   Origin → Centre of span at top surface of deck slab
 
-Units : millimetres by default.  Pass units="m" or --units m to work in metres.
+Units : the model is always built in millimetres.  ``--units m`` only changes how
+        dimensional command-line values are interpreted (they are converted to mm).
 """
 
 import sys
@@ -35,7 +36,7 @@ class BridgeConfig:
     girder_centroid_spacing: float= 3000.0    # centre-to-centre girder spacing
     girder_offset_from_edge: float= 500.0     # deck overhang beyond outermost girder
     n_crossframes: int            = 5          # number of cross-frame planes along span
-    longitudinal_overhang: float  = 500.0     # distance from span centre to pier centre overhang
+    longitudinal_overhang: float  = 500.0     # inset of each pier centre from its span end (pier at ±(L/2 − overhang))
     n_lanes: int                  = 2          # lane count (informational / future demarcation)
     lane_width: float             = 3500.0    # width per traffic lane
 
@@ -58,15 +59,16 @@ class BridgeConfig:
     pier_diameter: float          = 800.0
     pier_height: float            = 3000.0
     pier_cap_length: float        = 1200.0     # longitudinal (X) extent of pier cap
-    # pier_cap_top_width: left as 0.0 → auto-set via property to span all girders
-    pier_cap_top_width_override: InitVar[float]    = 0.0        # transverse width at cap top (0 = auto)
-    pier_cap_bottom_width_override: InitVar[float] = 0.0        # transverse width at cap bottom (0 = auto = pier dia + 2×200)
+    # Cap widths are exposed as the ``pier_cap_top_width`` / ``pier_cap_bottom_width``
+    # properties below; leaving an override at 0.0 selects the automatic value.
+    pier_cap_top_width_override: InitVar[float]    = 0.0   # cap top width (0 = auto: girder span + 2 × pier dia)
+    pier_cap_bottom_width_override: InitVar[float] = 0.0   # cap bottom width (0 = auto: pier dia + 2 × 200)
     pier_cap_depth: float         = 600.0
     pier_cap_elevation: float     = 0.0        # Z-offset applied to computed pier-cap position
     pier_n_long_bars: int         = 8          # longitudinal rebar count in circular pier
 
     # ── Pile & pile cap ───────────────────────────────────────────────────
-    n_piles_per_cap: int          = 4
+    n_piles_per_cap: int          = 4         # piles per pile cap, laid out in rows of two
     pile_diameter: float          = 400.0
     pile_length: float            = 5000.0
     pile_spacing: float           = 1200.0     # centre-to-centre spacing between pile pairs
@@ -112,6 +114,8 @@ class BridgeConfig:
         # Integer coercions
         self.n_girders         = int(self.n_girders)
         self.n_piles_per_cap   = int(self.n_piles_per_cap)
+        if self.n_piles_per_cap < 1:
+            raise ValueError("n_piles_per_cap must be at least 1")
         self.n_crossframes     = int(self.n_crossframes)
         self.n_lanes           = int(self.n_lanes)
         self.pier_n_long_bars  = int(self.pier_n_long_bars)
@@ -129,7 +133,7 @@ class BridgeConfig:
 
     @property
     def unit_scale(self) -> float:
-        """Compute unit_scale for reference (used by tests, but NOT applied to dims)"""
+        """Metres-per-millimetre factor implied by ``units`` (informational; never applied to dimensions)."""
         return 0.001 if str(self.units).strip().lower() == "m" else 1.0
 
     @property
@@ -179,12 +183,11 @@ try:
         BRepBuilderAPI_Transform,
     )
     from OCC.Core.BRepPrimAPI import (
-        BRepPrimAPI_MakeBox,
         BRepPrimAPI_MakeCylinder,
         BRepPrimAPI_MakePrism,
         BRepPrimAPI_MakeTorus,
     )
-    from OCC.Core.BRepTools import breptools_Write
+    from OCC.Core.BRepTools import breptools
     from OCC.Core.Geom import Geom_Circle
     from OCC.Core.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
     from OCC.Core.Quantity import Quantity_Color, Quantity_TOC_RGB
@@ -521,6 +524,25 @@ def build_deck(config: BridgeConfig) -> list:
     return segments
 
 
+def _pile_offsets(config: BridgeConfig) -> list:
+    """
+    (dx, dy) offsets of each pile centre from the pile-cap centre.
+
+    Piles are laid out in rows of two (spaced *pile_spacing* apart across the deck); an odd
+    final pile sits on the centreline.  Rows are spread evenly along the pile-cap length, so the
+    default of four piles gives the usual 2 × 2 group at ±pile_cap_length / 4 × ±pile_spacing / 2.
+    """
+    n_rows = math.ceil(config.n_piles_per_cap / 2)
+    half_y = config.pile_spacing / 2.0
+    offsets = []
+    for row in range(n_rows):
+        dx = (row + 0.5) * config.pile_cap_length / n_rows - config.pile_cap_length / 2.0
+        n_in_row = min(2, config.n_piles_per_cap - 2 * row)
+        for dy in ((-half_y, half_y) if n_in_row == 2 else (0.0,)):
+            offsets.append((dx, dy))
+    return offsets
+
+
 def build_piers_and_pilecaps(config: BridgeConfig) -> dict:
     """
     Construct the complete bridge substructure:
@@ -560,6 +582,7 @@ def build_piers_and_pilecaps(config: BridgeConfig) -> dict:
     z_pcap_bot   = z_pcap_top - config.pile_cap_depth
 
     pier_xs = [-config.pier_location_x, config.pier_location_x]
+    pile_offsets = _pile_offsets(config)
 
     pier_caps, piers, pile_caps, piles, stirrups = [], [], [], [], []
 
@@ -588,15 +611,7 @@ def build_piers_and_pilecaps(config: BridgeConfig) -> dict:
         pcap = _translate(pcap, dx=px, dz=z_pcap_bot)
         pile_caps.append(pcap)
 
-        # — Piles (2 × 2 grid) —
-        # Longitudinal offset (ox) uses pile_cap_length / 4 so piles
-        # sit comfortably within the pile cap footprint in both axes.
-        ox_step = config.pile_cap_length / 4.0
-        oy_step = config.pile_spacing    / 2.0
-        pile_offsets = [
-            (-ox_step, -oy_step), (-ox_step,  oy_step),
-            ( ox_step, -oy_step), ( ox_step,  oy_step),
-        ]
+        # — Piles —
         z_pile_bot = z_pcap_bot - config.pile_length
         for ox, oy in pile_offsets:
             pile = create_pile(config.pile_diameter, config.pile_length)
@@ -624,7 +639,7 @@ def build_piers_and_pilecaps(config: BridgeConfig) -> dict:
     }
 
 
-def build_all_rebar(config: BridgeConfig, sub: dict) -> dict:
+def build_all_rebar(config: BridgeConfig) -> dict:
     """
     Generate steel reinforcement for every concrete component.
 
@@ -724,7 +739,7 @@ def assemble_bridge(config: BridgeConfig):
     crossframes = build_crossframes(config)
     deck_segs   = build_deck(config)
     sub         = build_piers_and_pilecaps(config)
-    rebar       = build_all_rebar(config, sub)
+    rebar       = build_all_rebar(config)
 
     parts = {
         "girders":         girders,
@@ -773,7 +788,7 @@ def export_step(compound, filename: str):
 def export_brep(compound, filename: str):
     """Write the assembly to an OpenCASCADE BREP file."""
     Path(filename).parent.mkdir(parents=True, exist_ok=True)
-    breptools_Write(compound, filename)
+    breptools.Write(compound, filename)
     print(f"  BREP export → {filename}")
 
 
@@ -840,11 +855,7 @@ def launch_viewer(config: BridgeConfig, parts: dict):
         except Exception:
             pass
 
-    # Custom camera preset: 3/4 front-below view that reveals both pier groups
-    # and the full substructure without the deck obscuring the far pier.
-    
-    display.View_Iso()              # fall back to standard iso if API differs
-
+    display.View_Iso()
     display.FitAll()
     start()
 
@@ -853,14 +864,15 @@ def launch_viewer(config: BridgeConfig, parts: dict):
 # SECTION 8 — CLI ENTRY POINT
 # ---------------------------------------------------------------------------
 
-def _parse_args():
+def _parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="ParaBridge — parametric steel girder bridge model",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
     # ── Geometry ────────────────────────────────────────────────────────────
-    parser.add_argument("--span",           type=float, help="Span length in chosen units")
+    parser.add_argument("--span",           type=float, dest="span_length_L", metavar="SPAN",
+                        help="Span length in chosen units")
     parser.add_argument("--units",          type=str,   default="mm", choices=["mm", "m"],
                         help="Unit system")
     parser.add_argument("--n-girders",      type=int,   dest="n_girders",
@@ -914,51 +926,44 @@ def _parse_args():
     parser.add_argument("--lod",        action="store_true", dest="pile_lod_enabled",
                         help="Use lightweight edge rings for pile stirrups (faster export)")
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main():
-    args = _parse_args()
+# CLI options (by BridgeConfig field name) that hold lengths and therefore need
+# converting to millimetres when the user passes ``--units m``.
+_LENGTH_OPTIONS = (
+    "span_length_L", "girder_centroid_spacing", "deck_thickness", "girder_offset_from_edge",
+    "girder_section_d", "girder_section_bf_bot", "girder_section_tf_bot", "girder_section_tw",
+    "pier_height", "pier_diameter", "pile_length", "pile_diameter",
+    "rebar_spacing_longitudinal",
+)
 
-    # Build BridgeConfig kwargs from whatever was explicitly passed
+# CLI options that map straight onto a BridgeConfig field without any conversion.
+_PLAIN_OPTIONS = (
+    "n_girders", "n_piles_per_cap", "n_crossframes", "concrete_opacity", "step_filename",
+)
+
+
+def build_config(args: argparse.Namespace) -> BridgeConfig:
+    """Translate parsed CLI arguments into a BridgeConfig (lengths converted to mm)."""
+    scale  = 1000.0 if args.units == "m" else 1.0
     kwargs = {"units": args.units}
 
-    simple_fields = [
-        "n_girders", "girder_centroid_spacing", "deck_thickness",
-        "girder_offset_from_edge", "girder_section_d", "girder_section_bf_bot",
-        "girder_section_tf_bot", "girder_section_tw",
-        "pier_height", "pier_diameter", "pile_length", "pile_diameter",
-        "n_piles_per_cap", "n_crossframes", "rebar_spacing_longitudinal",
-        "concrete_opacity", "step_filename", "pile_lod_enabled",
-    ]
-    for field in simple_fields:
-        val = getattr(args, field, None)
-        if val is not None:
-            kwargs[field] = val
+    for name in _LENGTH_OPTIONS:
+        value = getattr(args, name, None)
+        if value is not None:
+            kwargs[name] = value * scale
+    for name in _PLAIN_OPTIONS:
+        value = getattr(args, name, None)
+        if value is not None:
+            kwargs[name] = value
 
-    # All dimensional CLI args need pre-scaling to mm
-    unit_scale = 1000.0 if args.units == "m" else 1.0
+    # A single flange width / thickness applies to both the top and bottom flange.
+    if "girder_section_bf_bot" in kwargs:
+        kwargs["girder_section_bf_top"] = kwargs["girder_section_bf_bot"]
+    if "girder_section_tf_bot" in kwargs:
+        kwargs["girder_section_tf_top"] = kwargs["girder_section_tf_bot"]
 
-    # Dimensional fields passed via simple_fields also need scaling
-    dimensional_simple = [
-        "girder_centroid_spacing", "deck_thickness", "girder_offset_from_edge",
-        "girder_section_d", "girder_section_bf_bot", "girder_section_tf_bot",
-        "girder_section_tw", "rebar_spacing_longitudinal",
-    ]
-    for f in dimensional_simple:
-        if f in kwargs:
-            kwargs[f] = kwargs[f] * unit_scale
-
-    if args.span:
-        kwargs["span_length_L"] = args.span * unit_scale
-    if args.pier_height:
-        kwargs["pier_height"] = args.pier_height * unit_scale
-    if args.pile_length:
-        kwargs["pile_length"] = args.pile_length * unit_scale
-    if args.pile_diameter:
-        kwargs["pile_diameter"] = args.pile_diameter * unit_scale
-    if args.pier_diameter:
-        kwargs["pier_diameter"] = args.pier_diameter * unit_scale
     if args.no_rebar:
         kwargs["rebar_visible"] = False
     if args.no_step:
@@ -970,13 +975,13 @@ def main():
     if args.pile_lod_enabled:
         kwargs["pile_lod_enabled"] = True
 
-    # Sync symmetric flange dims if user passed a single value
-    if args.girder_section_bf_bot:
-        kwargs["girder_section_bf_top"] = args.girder_section_bf_bot
-    if args.girder_section_tf_bot:
-        kwargs["girder_section_tf_top"] = args.girder_section_tf_bot
+    return BridgeConfig(**kwargs)
 
-    config   = BridgeConfig(**kwargs)
+
+def main(argv=None):
+    args = _parse_args(argv)
+
+    config = build_config(args)
     compound, parts = assemble_bridge(config)
 
     if config.save_step:
