@@ -1,0 +1,9 @@
+name: parabridge
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pythonocc-core>=7.7
+  - pyside6
+  - numpy
+  - pytest
