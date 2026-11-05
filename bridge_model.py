@@ -17,7 +17,7 @@ Units : millimetres by default.  Pass units="m" or --units m to work in metres.
 import sys
 import math
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, InitVar
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -35,7 +35,7 @@ class BridgeConfig:
     girder_centroid_spacing: float= 3000.0    # centre-to-centre girder spacing
     girder_offset_from_edge: float= 500.0     # deck overhang beyond outermost girder
     n_crossframes: int            = 5          # number of cross-frame planes along span
-    pier_location_x: float        = 5500.0    # |X| from span centre for each pier (symmetric pair)
+    longitudinal_overhang: float  = 500.0     # distance from span centre to pier centre overhang
     n_lanes: int                  = 2          # lane count (informational / future demarcation)
     lane_width: float             = 3500.0    # width per traffic lane
 
@@ -58,9 +58,9 @@ class BridgeConfig:
     pier_diameter: float          = 800.0
     pier_height: float            = 3000.0
     pier_cap_length: float        = 1200.0     # longitudinal (X) extent of pier cap
-    # pier_cap_top_width: left as None → auto-set in __post_init__ to span all girders
-    pier_cap_top_width: float     = 0.0        # transverse width at cap top (0 = auto)
-    pier_cap_bottom_width: float  = 0.0        # transverse width at cap bottom (0 = auto = pier dia + 2×200)
+    # pier_cap_top_width: left as 0.0 → auto-set via property to span all girders
+    pier_cap_top_width_override: InitVar[float]    = 0.0        # transverse width at cap top (0 = auto)
+    pier_cap_bottom_width_override: InitVar[float] = 0.0        # transverse width at cap bottom (0 = auto = pier dia + 2×200)
     pier_cap_depth: float         = 600.0
     pier_cap_elevation: float     = 0.0        # Z-offset applied to computed pier-cap position
     pier_n_long_bars: int         = 8          # longitudinal rebar count in circular pier
@@ -101,15 +101,13 @@ class BridgeConfig:
     brep_filename: str            = "output/bridge_model.brep"
     render_size: tuple            = (1200, 800)
 
-    # ── Auto-derived fields (do not set manually) ──────────────────────────
-    unit_scale: float  = field(init=False)
-    deck_width: float  = field(init=False)
-    girder_length: float = field(init=False)
+    # ── Internal backing fields ────────────────────────────────────────────
+    _pier_cap_top_width: float = field(init=False, repr=False, default=0.0)
+    _pier_cap_bottom_width: float = field(init=False, repr=False, default=0.0)
 
-    def __post_init__(self):
-        # Compute unit_scale for reference (used by tests, but NOT applied to dims)
-        # All dimensional inputs are already in correct units (mm for mm, already-converted for m)
-        self.unit_scale = 0.001 if str(self.units).strip().lower() == "m" else 1.0
+    def __post_init__(self, pier_cap_top_width_override: float, pier_cap_bottom_width_override: float):
+        self._pier_cap_top_width = float(pier_cap_top_width_override)
+        self._pier_cap_bottom_width = float(pier_cap_bottom_width_override)
 
         # Integer coercions
         self.n_girders         = int(self.n_girders)
@@ -129,19 +127,43 @@ class BridgeConfig:
         self.concrete_opacity      = float(self.concrete_opacity)
         self.deck_material_opacity = float(self.deck_material_opacity)
 
-        # Derived geometry
-        self.deck_width   = (self.n_girders - 1) * self.girder_centroid_spacing \
-                            + 2.0 * self.girder_offset_from_edge
-        self.girder_length = self.span_length_L
+    @property
+    def unit_scale(self) -> float:
+        """Compute unit_scale for reference (used by tests, but NOT applied to dims)"""
+        return 0.001 if str(self.units).strip().lower() == "m" else 1.0
 
-        # Auto-derive pier cap widths when sentinel 0.0 is left unchanged:
-        #   top_width  → spans all girders + one pier_diameter overhang per side
-        #   bottom_width → pier diameter + 2 × 200 mm bearing ledge
+    @property
+    def deck_width(self) -> float:
+        return (self.n_girders - 1) * self.girder_centroid_spacing + 2.0 * self.girder_offset_from_edge
+
+    @property
+    def girder_length(self) -> float:
+        return self.span_length_L
+
+    @property
+    def pier_location_x(self) -> float:
+        return (self.span_length_L / 2.0) - self.longitudinal_overhang
+
+    @property
+    def pier_cap_top_width(self) -> float:
+        if self._pier_cap_top_width != 0.0:
+            return self._pier_cap_top_width
         outer_girder_span = (self.n_girders - 1) * self.girder_centroid_spacing
-        if self.pier_cap_top_width == 0.0:
-            self.pier_cap_top_width = outer_girder_span + 2.0 * self.pier_diameter
-        if self.pier_cap_bottom_width == 0.0:
-            self.pier_cap_bottom_width = self.pier_diameter + 2.0 * 200.0
+        return outer_girder_span + 2.0 * self.pier_diameter
+
+    @pier_cap_top_width.setter
+    def pier_cap_top_width(self, value: float):
+        self._pier_cap_top_width = float(value)
+
+    @property
+    def pier_cap_bottom_width(self) -> float:
+        if self._pier_cap_bottom_width != 0.0:
+            return self._pier_cap_bottom_width
+        return self.pier_diameter + 2.0 * 200.0
+
+    @pier_cap_bottom_width.setter
+    def pier_cap_bottom_width(self, value: float):
+        self._pier_cap_bottom_width = float(value)
 
 
 # ---------------------------------------------------------------------------
